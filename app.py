@@ -53,10 +53,10 @@ if PASSWORD:
                     st.session_state["authenticated"] = True
                     st.session_state["authenticated_password"] = PASSWORD
                     st.success("Authentication successful. Loading dashboard...")
-                    st.experimental_rerun()
                 else:
                     st.error("Incorrect password. Try again.")
-        st.stop()
+        if not st.session_state.get("authenticated"):
+            st.stop()
 else:
     st.warning(
         "No app password configured. Set `app_password` in Streamlit secrets to protect access."
