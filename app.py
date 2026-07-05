@@ -6,6 +6,8 @@ Usage:
   streamlit run app.py
 """
 
+from datetime import datetime, timezone
+from math import ceil
 from urllib.parse import quote
 
 import pandas as pd
@@ -18,12 +20,53 @@ from scanner import run_scan
 st.set_page_config(page_title="Signal Dashboard", layout="wide")
 db.init_db()
 
+PASSWORD_SECRET_KEY = "app_password"
+PASSWORD = None
+try:
+    secrets = st.secrets
+    if secrets and PASSWORD_SECRET_KEY in secrets:
+        PASSWORD = secrets[PASSWORD_SECRET_KEY]
+except Exception:
+    PASSWORD = None
+
 if "scan_running" not in st.session_state:
     st.session_state["scan_running"] = False
 
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+    st.session_state["authenticated_password"] = None
+
+if PASSWORD:
+    if st.session_state.get("authenticated"):
+        if st.session_state.get("authenticated_password") != PASSWORD:
+            st.session_state["authenticated"] = False
+            st.session_state["authenticated_password"] = None
+
+    if not st.session_state.get("authenticated"):
+        st.title("🔒 Secure Dashboard")
+        st.info("Enter the app password configured in Streamlit secrets to continue.")
+        with st.form("login_form"):
+            password_input = st.text_input("Password", type="password")
+            submit_button = st.form_submit_button("Log in")
+            if submit_button:
+                if password_input == PASSWORD:
+                    st.session_state["authenticated"] = True
+                    st.session_state["authenticated_password"] = PASSWORD
+                    st.success("Authentication successful. Loading dashboard...")
+                    st.experimental_rerun()
+                else:
+                    st.error("Incorrect password. Try again.")
+        st.stop()
+else:
+    st.warning(
+        "No app password configured. Set `app_password` in Streamlit secrets to protect access."
+    )
+
 ALL_SIGNAL_TYPES = ["macd_cross", "confluence"] + PATTERN_COLUMNS
-DEFAULT_SCAN_INSTRUMENTS = ["EURUSD", "GBPUSD", "USDJPY"]
-DEFAULT_SCAN_TIMEFRAMES = ["15m", "1h"]
+DEFAULT_SCAN_INSTRUMENTS = list(INSTRUMENTS)
+DEFAULT_SCAN_TIMEFRAMES = list(TIMEFRAMES)
+META_LAST_SCAN = "last_scan_time"
+META_CLEARED_AT = "signals_cleared_at"
 
 # Maps our instrument keys to TradingView's symbol format for the embedded
 # widget. These are best-effort — TradingView's exact ticker for indices/
@@ -76,13 +119,13 @@ with st.sidebar:
         "Instruments",
         options=list(INSTRUMENTS),
         default=DEFAULT_SCAN_INSTRUMENTS,
-        help="Start with a small set for faster scans; you can add more instruments later.",
+        help="All supported instruments are selected by default. Remove any instrument to narrow the scan.",
     )
     selected_timeframes = st.multiselect(
         "Timeframes",
         options=list(TIMEFRAMES),
         default=DEFAULT_SCAN_TIMEFRAMES,
-        help="The default selection is tuned to stay responsive on hosted deployments.",
+        help="All supported timeframes are selected by default. Remove any timeframe to speed up the scan.",
     )
     selected_signal_types = st.multiselect(
         "Signal types", options=ALL_SIGNAL_TYPES,
@@ -91,13 +134,43 @@ with st.sidebar:
              "See the FAQ tab for what each one means.",
     )
     row_limit = st.slider("Max rows shown", 50, 2000, 300, step=50)
+    st.caption("Tip: lower the row limit or remove instruments/timeframes if the UI feels slow.")
 
     st.divider()
     st.header("Run a scan")
-    st.caption("⚠️ A full scan across many instruments and timeframes can take a while. "
-               "The default selection is kept small so the hosted app stays responsive.")
 
     scan_running = st.session_state.get("scan_running", False)
+
+    last_scan_iso = db.get_meta(META_LAST_SCAN)
+    cleared_at_iso = db.get_meta(META_CLEARED_AT)
+    last_scan = None
+    cleared_at = None
+
+    if last_scan_iso:
+        try:
+            last_scan = datetime.fromisoformat(last_scan_iso)
+        except ValueError:
+            last_scan = None
+
+    if cleared_at_iso:
+        try:
+            cleared_at = datetime.fromisoformat(cleared_at_iso)
+        except ValueError:
+            cleared_at = None
+
+    if last_scan:
+        st.markdown(f"**Last latest-candles scan:** {last_scan.strftime('%Y-%m-%d %H:%M UTC')}")
+    else:
+        st.markdown("**Last latest-candles scan:** _never run yet_")
+
+    if cleared_at:
+        st.markdown(
+            f"**Database cleared:** {cleared_at.strftime('%Y-%m-%d %H:%M UTC')} — the next latest-candles scan will start fresh."
+        )
+
+    st.info(
+        "Latest-candles scans are incremental when possible: repeated clicks scan only new data since the last successful check."
+    )
 
     def safe_run_scan(*args, **kwargs):
         try:
@@ -115,6 +188,39 @@ with st.sidebar:
         help="Check the latest recent candles for each selected instrument/timeframe and store any new signals.",
     ):
         st.session_state["scan_running"] = True
+
+        last_scan_iso = db.get_meta(META_LAST_SCAN)
+        cleared_at_iso = db.get_meta(META_CLEARED_AT)
+        now = datetime.now(timezone.utc)
+        last_scan = None
+        cleared_at = None
+
+        if last_scan_iso:
+            try:
+                last_scan = datetime.fromisoformat(last_scan_iso)
+            except ValueError:
+                last_scan = None
+
+        if cleared_at_iso:
+            try:
+                cleared_at = datetime.fromisoformat(cleared_at_iso)
+            except ValueError:
+                cleared_at = None
+
+        if last_scan and cleared_at and cleared_at > last_scan:
+            last_scan = None
+            st.info("Database was cleared since the last scan. Running a fresh latest-candles scan.")
+
+        if last_scan:
+            elapsed_days = ceil((now - last_scan).total_seconds() / 86400)
+            lookback_days = min(max(1, elapsed_days + 1), 30)
+            st.info(
+                f"Rescanning from last check ({last_scan.strftime('%Y-%m-%d %H:%M UTC')}) "
+                f"with a {lookback_days}-day window."
+            )
+        else:
+            lookback_days = 1
+
         with st.spinner("Scanning latest candles..."):
             progress_bar = st.progress(0, text="Starting...")
 
@@ -124,11 +230,13 @@ with st.sidebar:
             new_count = safe_run_scan(
                 selected_instruments or list(INSTRUMENTS),
                 selected_timeframes or list(TIMEFRAMES),
-                lookback_days=1,
+                lookback_days=lookback_days,
                 only_latest=True,
                 alert=False,
                 progress_callback=_update_progress2,
             )
+
+        db.set_meta(META_LAST_SCAN, now.isoformat())
 
         if new_count:
             st.success(f"Check complete — {new_count} new signals stored.")
@@ -136,42 +244,61 @@ with st.sidebar:
             st.info("Scan complete — no new signals were found.")
 
     st.caption("Backtest controls")
+    st.info("Backtests scan the selected history and store any new signals. Use this when you want to rebuild signal history from the selected window.")
     scan_days = st.number_input("Backtest lookback (days)", min_value=1, max_value=90, value=10)
 
-    if st.button(
-        "🔍 Run backtest scan now",
-        width='stretch',
-        disabled=scan_running,
-        help="Scan the full selected history for the chosen lookback period and store all new signals.",
-    ):
-        st.session_state["scan_running"] = True
-        with st.spinner("Running backtest scan..."):
-            progress_bar = st.progress(0, text="Starting...")
+    if st.session_state.get("confirm_backtest", False):
+        st.warning("This will scan the full selected history and store all new signals. Please confirm to proceed.")
+        if st.button("Confirm full backtest scan now", disabled=scan_running, key="confirm_backtest_confirm"):
+            st.session_state["scan_running"] = True
+            st.session_state["confirm_backtest"] = False
+            with st.spinner("Running backtest scan..."):
+                progress_bar = st.progress(0, text="Starting...")
 
-            def _update_progress(tf, step, total_steps):
-                progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
+                def _update_progress(tf, step, total_steps):
+                    progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
 
-            new_count = safe_run_scan(
-                selected_instruments or list(INSTRUMENTS),
-                selected_timeframes or list(TIMEFRAMES),
-                lookback_days=scan_days,
-                only_latest=False,
-                alert=False,
-                progress_callback=_update_progress,
-            )
+                new_count = safe_run_scan(
+                    selected_instruments or list(INSTRUMENTS),
+                    selected_timeframes or list(TIMEFRAMES),
+                    lookback_days=scan_days,
+                    only_latest=False,
+                    alert=False,
+                    progress_callback=_update_progress,
+                )
 
-        if new_count:
-            st.success(f"Scan complete — {new_count} new signals stored.")
-        else:
-            st.info("Backtest complete — no new signals were found.")
+            if new_count:
+                st.success(f"Backtest complete — {new_count} new signals stored.")
+            else:
+                st.info("Backtest complete — no new signals were found.")
+        if st.button("Cancel backtest", key="cancel_backtest"):
+            st.session_state["confirm_backtest"] = False
+    else:
+        if st.button(
+            "🔍 Run backtest scan now",
+            width='stretch',
+            disabled=scan_running,
+            help="Scan the full selected history for the chosen lookback period and store all new signals.",
+        ):
+            st.session_state["confirm_backtest"] = True
 
     st.divider()
     st.caption("Background scans: run the live scanner in another terminal to update every 5 minutes even when the dashboard is closed.")
     st.caption("Database")
-    if st.button("🗑️ Clear all stored signals", width='stretch'):
-        deleted = db.clear_signals()
-        st.session_state.pop("signals_df", None)
-        st.success(f"Cleared {deleted} stored signal(s).")
+    st.info("Clearing stored signals removes all rows and resets the scan history metadata. Use only if you want to restart from scratch.")
+
+    if st.session_state.get("confirm_clear", False):
+        st.warning("This will delete all stored signals from the database. Please confirm to proceed.")
+        if st.button("Confirm clear stored signals", key="confirm_clear_confirm"):
+            deleted = db.clear_signals()
+            st.session_state.pop("signals_df", None)
+            st.session_state["confirm_clear"] = False
+            st.success(f"Cleared {deleted} stored signal(s).")
+        if st.button("Cancel clear", key="cancel_clear"):
+            st.session_state["confirm_clear"] = False
+    else:
+        if st.button("🗑️ Clear all stored signals", width='stretch', disabled=scan_running):
+            st.session_state["confirm_clear"] = True
 
 # ------------------- TABS -------------------
 tab_dashboard, tab_faq = st.tabs(["📊 Dashboard", "📖 FAQ / Help"])
