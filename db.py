@@ -5,6 +5,7 @@ portable to Replit as-is (no external database needed for a personal tool).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import sqlite3
 from contextlib import contextmanager
 
@@ -24,6 +25,11 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_instrument ON signals(instrument);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -43,10 +49,33 @@ def init_db(db_path: str = DB_PATH) -> None:
         conn.commit()
 
 
+def set_meta(key: str, value: str, db_path: str = DB_PATH) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+
+
+def get_meta(key: str, db_path: str = DB_PATH) -> str | None:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (key,),
+        ).fetchone()
+        return row["value"] if row else None
+
+
 def clear_signals(db_path: str = DB_PATH) -> int:
-    """Delete all stored signals and recreate the table schema."""
+    """Delete all stored signals and record the clear timestamp."""
+    now = datetime.now(timezone.utc).isoformat()
     with get_conn(db_path) as conn:
         deleted = conn.execute("DELETE FROM signals").rowcount
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("signals_cleared_at", now),
+        )
         conn.commit()
         return deleted
 
