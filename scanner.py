@@ -19,6 +19,7 @@ import argparse
 import time
 import traceback
 from datetime import datetime
+from typing import Iterator
 
 import pandas as pd
 import requests
@@ -132,6 +133,12 @@ def process_instrument(key: str, tf: str, raw_df, higher_df, only_latest: bool,
 import time as _time
 
 
+def iter_scan_batches(timeframes: list[str], batch_size: int = 2) -> Iterator[list[str]]:
+    """Yield timeframes in small batches so long scans stay responsive."""
+    for i in range(0, len(timeframes), batch_size):
+        yield timeframes[i:i + batch_size]
+
+
 def run_scan(instrument_keys: list[str], timeframes: list[str], lookback_days: int,
              only_latest: bool, alert: bool, progress_callback=None) -> int:
     """
@@ -141,30 +148,32 @@ def run_scan(instrument_keys: list[str], timeframes: list[str], lookback_days: i
     """
     total_new = 0
     total_steps = len(timeframes)
-    for step, tf in enumerate(timeframes, start=1):
-        needs_higher = tf in HIGHER_TF
-        data = get_multi_data(instrument_keys, tf, lookback_days=max(lookback_days, 5))
-        higher_data = {}
-        if needs_higher:
-            _time.sleep(1)  # brief pause between batched fetches
-            higher_tf = HIGHER_TF[tf]
-            higher_data = get_multi_data(instrument_keys, higher_tf, lookback_days=max(lookback_days, 10))
+    for batch_idx, batch in enumerate(iter_scan_batches(timeframes, batch_size=2), start=1):
+        for step_offset, tf in enumerate(batch, start=1):
+            global_step = (batch_idx - 1) * 2 + step_offset
+            needs_higher = tf in HIGHER_TF
+            data = get_multi_data(instrument_keys, tf, lookback_days=max(lookback_days, 5))
+            higher_data = {}
+            if needs_higher:
+                _time.sleep(1)
+                higher_tf = HIGHER_TF[tf]
+                higher_data = get_multi_data(instrument_keys, higher_tf, lookback_days=max(lookback_days, 10))
 
-        for key in instrument_keys:
-            raw_df = data.get(key)
-            higher_df = higher_data.get(key) if higher_data else None
-            try:
-                total_new += process_instrument(
-                    key, tf, raw_df, higher_df, only_latest, lookback_days, alert
-                )
-            except Exception:
-                print(f"[ERROR] processing {key} {tf}:")
-                traceback.print_exc()
+            for key in instrument_keys:
+                raw_df = data.get(key)
+                higher_df = higher_data.get(key) if higher_data else None
+                try:
+                    total_new += process_instrument(
+                        key, tf, raw_df, higher_df, only_latest, lookback_days, alert
+                    )
+                except Exception:
+                    print(f"[ERROR] processing {key} {tf}:")
+                    traceback.print_exc()
 
-        if progress_callback:
-            progress_callback(tf, step, total_steps)
+            if progress_callback:
+                progress_callback(tf, global_step, total_steps)
 
-        _time.sleep(1)  # brief pause before moving to the next timeframe
+            _time.sleep(1)
 
     return total_new
 
