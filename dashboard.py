@@ -99,6 +99,15 @@ with st.sidebar:
 
     scan_running = st.session_state.get("scan_running", False)
 
+    def safe_run_scan(*args, **kwargs):
+        try:
+            return run_scan(*args, **kwargs)
+        except Exception as exc:
+            st.error(f"Scan failed: {exc}")
+            return 0
+        finally:
+            st.session_state["scan_running"] = False
+
     if st.button(
         "⚡ Check latest candles now",
         width='stretch',
@@ -106,21 +115,25 @@ with st.sidebar:
         help="Check the latest recent candles for each selected instrument/timeframe and store any new signals.",
     ):
         st.session_state["scan_running"] = True
-        progress_bar = st.progress(0, text="Starting...")
+        with st.spinner("Scanning latest candles..."):
+            progress_bar = st.progress(0, text="Starting...")
 
-        def _update_progress2(tf, step, total_steps):
-            progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
+            def _update_progress2(tf, step, total_steps):
+                progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
 
-        new_count = run_scan(
-            selected_instruments or list(INSTRUMENTS),
-            selected_timeframes or list(TIMEFRAMES),
-            lookback_days=1,
-            only_latest=True,
-            alert=False,
-            progress_callback=_update_progress2,
-        )
-        st.session_state["scan_running"] = False
-        st.success(f"Check complete — {new_count} new signals stored.")
+            new_count = safe_run_scan(
+                selected_instruments or list(INSTRUMENTS),
+                selected_timeframes or list(TIMEFRAMES),
+                lookback_days=1,
+                only_latest=True,
+                alert=False,
+                progress_callback=_update_progress2,
+            )
+
+        if new_count:
+            st.success(f"Check complete — {new_count} new signals stored.")
+        else:
+            st.info("Scan complete — no new signals were found.")
 
     st.caption("Backtest controls")
     scan_days = st.number_input("Backtest lookback (days)", min_value=1, max_value=90, value=10)
@@ -132,21 +145,25 @@ with st.sidebar:
         help="Scan the full selected history for the chosen lookback period and store all new signals.",
     ):
         st.session_state["scan_running"] = True
-        progress_bar = st.progress(0, text="Starting...")
+        with st.spinner("Running backtest scan..."):
+            progress_bar = st.progress(0, text="Starting...")
 
-        def _update_progress(tf, step, total_steps):
-            progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
+            def _update_progress(tf, step, total_steps):
+                progress_bar.progress(step / total_steps, text=f"Finished {tf} ({step}/{total_steps})")
 
-        new_count = run_scan(
-            selected_instruments or list(INSTRUMENTS),
-            selected_timeframes or list(TIMEFRAMES),
-            lookback_days=scan_days,
-            only_latest=False,
-            alert=False,
-            progress_callback=_update_progress,
-        )
-        st.session_state["scan_running"] = False
-        st.success(f"Scan complete — {new_count} new signals stored.")
+            new_count = safe_run_scan(
+                selected_instruments or list(INSTRUMENTS),
+                selected_timeframes or list(TIMEFRAMES),
+                lookback_days=scan_days,
+                only_latest=False,
+                alert=False,
+                progress_callback=_update_progress,
+            )
+
+        if new_count:
+            st.success(f"Scan complete — {new_count} new signals stored.")
+        else:
+            st.info("Backtest complete — no new signals were found.")
 
     st.divider()
     st.caption("Background scans: run the live scanner in another terminal to update every 5 minutes even when the dashboard is closed.")
