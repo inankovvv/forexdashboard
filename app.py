@@ -36,16 +36,15 @@ if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 if PASSWORD:
-    if st.session_state.get("authenticated"):
-        pass
-    else:
-        st.title("🔒 Secure Dashboard")
-        st.info("Enter the app password configured in Streamlit secrets to continue.")
-
+    if not st.session_state.get("authenticated"):
         login_placeholder = st.empty()
-        with login_placeholder.form("login_form"):
-            password_input = st.text_input("Password", type="password")
-            submit_button = st.form_submit_button("Log in")
+        with login_placeholder.container():
+            st.title("🔒 Secure Dashboard")
+            st.info("Enter the app password configured in Streamlit secrets to continue.")
+
+            with st.form("login_form"):
+                password_input = st.text_input("Password", type="password")
+                submit_button = st.form_submit_button("Log in")
 
         if submit_button:
             if password_input == PASSWORD:
