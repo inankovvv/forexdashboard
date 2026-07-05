@@ -34,27 +34,27 @@ if "scan_running" not in st.session_state:
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
-    st.session_state["authenticated_password"] = None
 
 if PASSWORD:
     if st.session_state.get("authenticated"):
-        if st.session_state.get("authenticated_password") != PASSWORD:
-            st.session_state["authenticated"] = False
-            st.session_state["authenticated_password"] = None
-
-    if not st.session_state.get("authenticated"):
+        pass
+    else:
         st.title("🔒 Secure Dashboard")
         st.info("Enter the app password configured in Streamlit secrets to continue.")
-        with st.form("login_form"):
+
+        login_placeholder = st.empty()
+        with login_placeholder.form("login_form"):
             password_input = st.text_input("Password", type="password")
             submit_button = st.form_submit_button("Log in")
-            if submit_button:
-                if password_input == PASSWORD:
-                    st.session_state["authenticated"] = True
-                    st.session_state["authenticated_password"] = PASSWORD
-                    st.success("Authentication successful. Loading dashboard...")
-                else:
-                    st.error("Incorrect password. Try again.")
+
+        if submit_button:
+            if password_input == PASSWORD:
+                st.session_state["authenticated"] = True
+                login_placeholder.empty()
+                st.success("Authentication successful. Loading dashboard...")
+            else:
+                st.error("Incorrect password. Try again.")
+
         if not st.session_state.get("authenticated"):
             st.stop()
 else:
