@@ -10,7 +10,7 @@ Covers:
   - Candlestick patterns: Doji, Hammer, Shooting Star, Bullish/Bearish Harami,
     Morning Star, Evening Star (from the candlestick recognition article)
 
-Used by scanner.py (writes signals to SQLite) and dashboard.py (Streamlit UI).
+Used by scanner.py (writes signals to SQLite) and app.py (Streamlit UI).
 """
 
 from __future__ import annotations
