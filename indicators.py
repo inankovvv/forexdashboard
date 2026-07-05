@@ -189,7 +189,7 @@ def detect_ema_cross_series(df: pd.DataFrame) -> pd.Series:
 
 
 def detect_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
-    """Add MT5-inspired candlestick pattern flags using wick/body logic."""
+    """Adds boolean columns for the manual candlestick patterns from the article."""
     df = df.copy()
     for col in [
         "doji", "hammer", "shooting_star", "bullish_engulfing", "bearish_engulfing",
@@ -206,16 +206,14 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
         curr_c = c.iloc[i]
 
         body = abs(curr_c - curr_o)
-        rng = curr_h - curr_l if curr_h > curr_l else 1e-6
+        rng = max(curr_h - curr_l, 1e-6)
         lower_wick = min(curr_o, curr_c) - curr_l
         upper_wick = curr_h - max(curr_o, curr_c)
 
-        # Doji: very small body relative to range.
         if body / rng <= 0.1:
             df.at[df.index[i], "doji"] = True
             continue
 
-        # Hammer / shooting star: long lower/upper wick with a compact body.
         if lower_wick >= 2 * body and upper_wick <= body:
             df.at[df.index[i], "hammer"] = True
             continue
@@ -224,53 +222,53 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
             df.at[df.index[i], "shooting_star"] = True
             continue
 
-        if i > 0:
+        if i >= 1:
             prev_o = o.iloc[i - 1]
             prev_c = c.iloc[i - 1]
             prev_body = abs(prev_c - prev_o)
 
-            # Bullish engulfing: red candle followed by a larger green candle that fully covers it.
             if (
                 prev_c < prev_o
                 and curr_c > curr_o
-                and curr_o <= prev_c
-                and curr_c >= prev_o
+                and curr_o < prev_c
+                and curr_c > prev_o
                 and body > prev_body
             ):
                 df.at[df.index[i], "bullish_engulfing"] = True
                 continue
 
-            # Bearish engulfing: green candle followed by a larger red candle that fully covers it.
             if (
                 prev_c > prev_o
                 and curr_c < curr_o
-                and curr_o >= prev_c
-                and curr_c <= prev_o
+                and curr_o > prev_c
+                and curr_c < prev_o
                 and body > prev_body
             ):
                 df.at[df.index[i], "bearish_engulfing"] = True
                 continue
 
-            # Harami: a large candle followed by a smaller candle contained inside the previous body.
-            if prev_o > prev_c and curr_o > curr_c and curr_o < prev_o and curr_c > prev_c:
+            if prev_o > prev_c and curr_o < curr_c and curr_o > prev_c and curr_c < prev_o:
                 df.at[df.index[i], "bullish_harami"] = True
                 continue
 
-            if prev_o < prev_c and curr_o < curr_c and curr_o > prev_o and curr_c < prev_c:
+            if prev_o < prev_c and curr_o > curr_c and curr_o < prev_c and curr_c > prev_o:
                 df.at[df.index[i], "bearish_harami"] = True
                 continue
 
-        if i > 1:
+        if i >= 2:
             o1, c1 = o.iloc[i - 2], c.iloc[i - 2]
-            o2, c2, h2, l2 = o.iloc[i - 1], c.iloc[i - 1], h.iloc[i - 1], l.iloc[i - 1]
-            midpoint = (o1 + c1) / 2
+            o2, c2 = o.iloc[i - 1], c.iloc[i - 1]
+            prev_high = h.iloc[i - 1]
+            prev_low = l.iloc[i - 1]
 
-            if c1 < o1 and abs(c2 - o2) < (h2 - l2) * 0.3 and curr_c > midpoint and curr_c > o2:
-                df.at[df.index[i], "morning_star"] = True
-                continue
+            if c1 < o1 and abs(c2 - o2) < (prev_high - prev_low) * 0.3 and curr_c > o2 and curr_c > (o1 + c1) / 2:
+                if min(o2, c2) < c1 and max(o2, c2) > c1:
+                    df.at[df.index[i], "morning_star"] = True
+                    continue
 
-            if c1 > o1 and abs(c2 - o2) < (h2 - l2) * 0.3 and curr_c < midpoint and curr_c < o2:
-                df.at[df.index[i], "evening_star"] = True
+            if c1 > o1 and abs(c2 - o2) < (prev_high - prev_low) * 0.3 and curr_c < o2 and curr_c < (o1 + c1) / 2:
+                if max(o2, c2) > c1 and min(o2, c2) < c1:
+                    df.at[df.index[i], "evening_star"] = True
 
     return df
 
