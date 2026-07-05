@@ -22,6 +22,8 @@ if "scan_running" not in st.session_state:
     st.session_state["scan_running"] = False
 
 ALL_SIGNAL_TYPES = ["macd_cross", "confluence"] + PATTERN_COLUMNS
+DEFAULT_SCAN_INSTRUMENTS = ["EURUSD", "GBPUSD", "USDJPY"]
+DEFAULT_SCAN_TIMEFRAMES = ["15m", "1h"]
 
 # Maps our instrument keys to TradingView's symbol format for the embedded
 # widget. These are best-effort — TradingView's exact ticker for indices/
@@ -71,10 +73,16 @@ def format_candle_time(value, timeframe=None):
 with st.sidebar:
     st.header("Filters")
     selected_instruments = st.multiselect(
-        "Instruments", options=list(INSTRUMENTS), default=list(INSTRUMENTS)
+        "Instruments",
+        options=list(INSTRUMENTS),
+        default=DEFAULT_SCAN_INSTRUMENTS,
+        help="Start with a small set for faster scans; you can add more instruments later.",
     )
     selected_timeframes = st.multiselect(
-        "Timeframes", options=list(TIMEFRAMES), default=list(TIMEFRAMES)
+        "Timeframes",
+        options=list(TIMEFRAMES),
+        default=DEFAULT_SCAN_TIMEFRAMES,
+        help="The default selection is tuned to stay responsive on hosted deployments.",
     )
     selected_signal_types = st.multiselect(
         "Signal types", options=ALL_SIGNAL_TYPES,
@@ -86,8 +94,8 @@ with st.sidebar:
 
     st.divider()
     st.header("Run a scan")
-    st.caption("⚠️ A full 23-instrument × 5-timeframe scan can take 1-2+ minutes. "
-               "Watch the progress bar below — don't click again while it's running.")
+    st.caption("⚠️ A full scan across many instruments and timeframes can take a while. "
+               "The default selection is kept small so the hosted app stays responsive.")
 
     scan_running = st.session_state.get("scan_running", False)
 
