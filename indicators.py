@@ -170,6 +170,40 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average True Range — measures candle-to-candle volatility."""
+    high, low, prev_close = df["High"], df["Low"], df["Close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+
+def compute_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3):
+    """Returns (%K, %D) Stochastic oscillator series."""
+    low_min  = df["Low"].rolling(k_period).min()
+    high_max = df["High"].rolling(k_period).max()
+    stoch_k  = 100 * (df["Close"] - low_min) / (high_max - low_min + 1e-10)
+    return stoch_k, stoch_k.rolling(d_period).mean()
+
+
+def compute_williams_r(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Williams %R oscillator (-100 to 0)."""
+    high_max = df["High"].rolling(period).max()
+    low_min  = df["Low"].rolling(period).min()
+    return -100 * (high_max - df["Close"]) / (high_max - low_min + 1e-10)
+
+
+def compute_cci(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Commodity Channel Index."""
+    tp  = (df["High"] + df["Low"] + df["Close"]) / 3
+    ma  = tp.rolling(period).mean()
+    mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    return (tp - ma) / (0.015 * mad + 1e-10)
+
+
 # ------------------- SIGNAL SERIES (vectorized, whole history) -------------------
 
 def detect_macd_cross_series(df: pd.DataFrame) -> pd.Series:
@@ -346,3 +380,65 @@ def analyze(df: pd.DataFrame, higher_df: pd.DataFrame | None = None) -> pd.DataF
     df["ema_cross"] = detect_ema_cross_series(df)
     df = detect_candlestick_patterns(df)
     return df
+
+
+# ------------------- PAIR ANALYSIS SNAPSHOT -------------------
+
+def get_pair_analysis(df: pd.DataFrame) -> dict:
+    """
+    Returns a flat snapshot dict of all indicator values for the most recent
+    closed candle. Used by the dashboard's single-instrument analysis panel.
+    Returns {} when the DataFrame is too short to compute reliable values.
+    """
+    if df is None or df.empty or len(df) < 30:
+        return {}
+
+    close = df["Close"]
+    last  = float(close.iloc[-1])
+    prev  = float(close.iloc[-2])
+    change     = last - prev
+    change_pct = (change / prev * 100) if prev else 0.0
+
+    ema9   = float(close.ewm(span=9,   adjust=False).mean().iloc[-1])
+    ema21  = float(close.ewm(span=21,  adjust=False).mean().iloc[-1])
+    ema50  = float(close.ewm(span=50,  adjust=False).mean().iloc[-1])
+    ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+
+    rsi = float(compute_rsi(close).iloc[-1])
+
+    macd_line, macd_sig, macd_hist_s = compute_macd(close)
+
+    bb_ma, bb_upper, bb_lower = compute_bollinger(close)
+    bb_u = float(bb_upper.iloc[-1])
+    bb_l = float(bb_lower.iloc[-1])
+    bb_m = float(bb_ma.iloc[-1])
+    bb_pct_b     = (last - bb_l) / (bb_u - bb_l + 1e-10)
+    bb_bandwidth = (bb_u - bb_l) / (bb_m + 1e-10)
+
+    atr = float(compute_atr(df).iloc[-1])
+
+    stoch_k, stoch_d = compute_stochastic(df)
+    wr  = float(compute_williams_r(df).iloc[-1])
+    cci = float(compute_cci(df).iloc[-1])
+
+    volume = None
+    if "Volume" in df.columns:
+        v = float(df["Volume"].iloc[-1])
+        if v > 0:
+            volume = v
+
+    return {
+        "last": last, "change": change, "change_pct": change_pct,
+        "high": float(df["High"].iloc[-1]), "low": float(df["Low"].iloc[-1]),
+        "volume": volume,
+        "ema9": ema9, "ema21": ema21, "ema50": ema50, "ema200": ema200,
+        "rsi": rsi,
+        "macd":        float(macd_line.iloc[-1]),
+        "macd_signal": float(macd_sig.iloc[-1]),
+        "macd_hist":   float(macd_hist_s.iloc[-1]),
+        "bb_upper": bb_u, "bb_lower": bb_l, "bb_ma": bb_m,
+        "bb_pct_b": bb_pct_b, "bb_bandwidth": bb_bandwidth,
+        "atr": atr,
+        "stoch_k": float(stoch_k.iloc[-1]), "stoch_d": float(stoch_d.iloc[-1]),
+        "williams_r": wr, "cci": cci,
+    }

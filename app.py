@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 import db
-from indicators import INSTRUMENTS, TIMEFRAMES, PATTERN_COLUMNS
+from indicators import INSTRUMENTS, TIMEFRAMES, PATTERN_COLUMNS, get_data, get_pair_analysis
 from scanner import run_scan
 
 st.set_page_config(page_title="Signal Dashboard", layout="wide")
@@ -305,6 +305,17 @@ with st.sidebar:
             st.session_state["confirm_clear"] = True
 
 # ------------------- TABS -------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pair_analysis(instrument: str, timeframe: str) -> dict:
+    """Fetch + compute indicator snapshot. Cached for 5 min to avoid thrashing yfinance."""
+    days = 300 if timeframe == "1d" else 60
+    try:
+        df = get_data(instrument, timeframe, lookback_days=days)
+        return get_pair_analysis(df)
+    except Exception:
+        return {}
+
+
 tab_dashboard, tab_faq = st.tabs(["📊 Dashboard", "📖 FAQ / Help"])
 
 with tab_dashboard:
@@ -395,6 +406,115 @@ with tab_dashboard:
         "use TradingView's own symbol search inside the chart — try prefixes like OANDA:, "
         "CAPITALCOM:, or FX_IDC: for that instrument."
     )
+
+    # ------------------- PAIR ANALYSIS PANEL -------------------
+    if len(selected_instruments) == 1:
+        inst = selected_instruments[0]
+        st.divider()
+        st.subheader(f"📊 {inst} — Technical Snapshot")
+        st.caption("Indicator values computed from the most recent closed candle. Auto-refreshes every 5 minutes.")
+
+        def _fmt(v: float) -> str:
+            av = abs(v)
+            if av >= 10000: return f"{v:,.0f}"
+            if av >= 1000:  return f"{v:,.2f}"
+            if av >= 10:    return f"{v:.3f}"
+            return f"{v:.5f}"
+
+        def _sig(bull: bool, bear: bool) -> str:
+            if bull: return "🟢"
+            if bear: return "🔴"
+            return "⚪"
+
+        tf_tabs = st.tabs(["⏱ 1h", "🕓 4h", "🗓 1d"])
+        for _tab, _tf in zip(tf_tabs, ["1h", "4h", "1d"]):
+            with _tab:
+                with st.spinner(f"Loading {inst} {_tf} data…"):
+                    v = _load_pair_analysis(inst, _tf)
+
+                if not v:
+                    st.warning(f"Not enough data to compute indicators for {inst} on {_tf}.")
+                    continue
+
+                _last = v["last"]
+
+                # Price header
+                pc1, pc2, pc3, pc4 = st.columns(4)
+                pc1.metric("Last Price", _fmt(_last))
+                pc2.metric(
+                    "Change",
+                    f"{v['change']:+.5f}" if _last < 100 else f"{v['change']:+.3f}",
+                    delta=f"{v['change_pct']:+.2f}%",
+                )
+                pc3.metric("Candle High", _fmt(v["high"]))
+                pc4.metric("Candle Low",  _fmt(v["low"]))
+
+                st.markdown("")
+
+                # Indicator columns
+                col_trend, col_osc, col_vol = st.columns(3)
+
+                with col_trend:
+                    st.markdown("**📈 Trend — EMAs**")
+                    for _lbl, _ema in [("EMA 9", v["ema9"]), ("EMA 21", v["ema21"]),
+                                       ("EMA 50", v["ema50"]), ("EMA 200", v["ema200"])]:
+                        _icon = _sig(_last > _ema, _last < _ema)
+                        st.markdown(f"{_icon} **{_lbl}** — {_fmt(_ema)}")
+
+                with col_osc:
+                    st.markdown("**🔄 Oscillators**")
+                    _rsi = v["rsi"]
+                    _rsi_note = " *(oversold)*" if _rsi < 30 else " *(overbought)*" if _rsi > 70 else ""
+                    st.markdown(f"{_sig(_rsi < 30, _rsi > 70)} **RSI (14)** — {_rsi:.1f}{_rsi_note}")
+                    _sk, _sd = v["stoch_k"], v["stoch_d"]
+                    _sk_note = " *(oversold)*" if _sk < 20 else " *(overbought)*" if _sk > 80 else ""
+                    st.markdown(f"{_sig(_sk < 20, _sk > 80)} **Stoch %K** — {_sk:.1f}{_sk_note}")
+                    st.markdown(f"⚪ **Stoch %D** — {_sd:.1f}")
+                    _wr = v["williams_r"]
+                    _wr_note = " *(oversold)*" if _wr < -80 else " *(overbought)*" if _wr > -20 else ""
+                    st.markdown(f"{_sig(_wr < -80, _wr > -20)} **Williams %R** — {_wr:.1f}{_wr_note}")
+                    _cci = v["cci"]
+                    _cci_note = " *(oversold)*" if _cci < -100 else " *(overbought)*" if _cci > 100 else ""
+                    st.markdown(f"{_sig(_cci < -100, _cci > 100)} **CCI (20)** — {_cci:.1f}{_cci_note}")
+
+                with col_vol:
+                    st.markdown("**📊 Bollinger Bands & Volatility**")
+                    st.markdown(f"⚪ **BB Upper** — {_fmt(v['bb_upper'])}")
+                    st.markdown(f"⚪ **BB Mid (MA20)** — {_fmt(v['bb_ma'])}")
+                    st.markdown(f"⚪ **BB Lower** — {_fmt(v['bb_lower'])}")
+                    _pb = v["bb_pct_b"]
+                    _pb_note = " *(below band)*" if _pb < 0 else " *(above band)*" if _pb > 1 else ""
+                    st.markdown(f"{_sig(_pb < 0, _pb > 1)} **BB %B** — {_pb:.2f}{_pb_note}")
+                    st.markdown(f"⚪ **BB Width** — {v['bb_bandwidth']*100:.2f}%")
+                    st.markdown(f"⚪ **ATR (14)** — {_fmt(v['atr'])}")
+                    if v["volume"]:
+                        _vol = v["volume"]
+                        _vs = f"{_vol/1e6:.2f}M" if _vol >= 1e6 else f"{_vol/1e3:.1f}K" if _vol >= 1e3 else f"{_vol:.0f}"
+                        st.markdown(f"⚪ **Volume** — {_vs}")
+
+                st.markdown("")
+
+                # MACD row
+                _mv, _ms, _mh = v["macd"], v["macd_signal"], v["macd_hist"]
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("MACD Line",   f"{_mv:.6f}")
+                mc2.metric("Signal Line", f"{_ms:.6f}")
+                mc3.metric("Histogram",   f"{_mh:+.6f}")
+                mc4.metric("MACD Direction", "🟢 Bullish" if _mh > 0 else "🔴 Bearish")
+
+                st.markdown("")
+
+                # Buy / Sell summary
+                _buys = [
+                    _last > v["ema9"],  _last > v["ema21"],
+                    _last > v["ema50"], _last > v["ema200"],
+                    v["rsi"] < 50, v["macd_hist"] > 0,
+                    v["stoch_k"] > 50, v["williams_r"] > -50,
+                    v["cci"] > 0, v["bb_pct_b"] > 0.5,
+                ]
+                _nb = sum(_buys)
+                _ns = len(_buys) - _nb
+                st.info(f"**Summary:** 🟢 {_nb} bullish &nbsp;|&nbsp; 🔴 {_ns} bearish — across {len(_buys)} indicator readings")
 
 
 with tab_faq:
