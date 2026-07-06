@@ -406,10 +406,26 @@ with tab_dashboard:
                 _focused_row = table_df.loc[_focused_matches].iloc[0]
                 _focused_no = int(_focused_row["#"])
 
+        _next_no = None
         if _focused_no is not None:
             _next_no = _focused_no + 1 if _focused_no < len(table_df) else None
             next_text = f"Next row to inspect: #{_next_no}" if _next_no is not None else "Next row to inspect: —"
-            st.info(f"Focused row #{_focused_no} of {len(table_df)}. {next_text}")
+            focus_col, action_col = st.columns([3, 1])
+            with focus_col:
+                st.info(f"Focused row #{_focused_no} of {len(table_df)}. {next_text}")
+            with action_col:
+                if _next_no is not None:
+                    if st.button(
+                        f"Inspect #{_next_no}",
+                        width="stretch",
+                        key=f"inspect_next_{_focused_no}",
+                    ):
+                        _next_matches = table_df["#"] == _next_no
+                        if _next_matches.any():
+                            st.session_state["selected_signal_key"] = table_df.loc[_next_matches].iloc[0]["_row_key"]
+                            st.rerun()
+                else:
+                    st.button("Inspect next", width="stretch", disabled=True, key=f"inspect_next_{_focused_no}")
 
         edited = st.data_editor(
             table_df.drop(columns=["_row_key"]),
@@ -457,15 +473,26 @@ with tab_dashboard:
         _match = signals_df.apply(lambda row: _signal_key(row) == _chart_key, axis=1)
         if _match.any():
             _sig_row = signals_df.loc[_match].iloc[0]
-            _focused_no = int(signals_df.index[_match][0]) + 1
+            _focused_no = None
+            if "#" in table_df.columns:
+                _focused_match = table_df["_row_key"].apply(lambda key: key == _chart_key)
+                if _focused_match.any():
+                    _focused_no = int(table_df.loc[_focused_match].iloc[0]["#"])
             chart_symbol     = TRADINGVIEW_SYMBOLS.get(_sig_row["instrument"], TRADINGVIEW_SYMBOLS["EURUSD"])
             chart_interval   = TF_TO_TV_INTERVAL.get(_sig_row["timeframe"], "60")
             chart_instrument = _sig_row["instrument"]
-            st.info(
-                f"📌 **#{_focused_no}** · **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
-                f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
-                f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
-            )
+            if _focused_no is not None:
+                st.info(
+                    f"📌 **#{_focused_no}** · **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
+                    f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
+                    f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
+                )
+            else:
+                st.info(
+                    f"📌 **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
+                    f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
+                    f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
+                )
         else:
             st.session_state["selected_signal_key"] = None
             _chart_key = None
