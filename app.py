@@ -430,8 +430,8 @@ with tab_dashboard:
         edited = st.data_editor(
             table_df.drop(columns=["_row_key"]),
             column_config={
-                "#": st.column_config.NumberColumn("#", width="small", format="%d"),
-                "📌": st.column_config.CheckboxColumn("📌", default=False, width="small"),
+                "#": st.column_config.NumberColumn("#", width="content", format="%d"),
+                "📌": st.column_config.CheckboxColumn("📌", default=False, width="content"),
             },
             disabled=["#", "Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close"],
             hide_index=True,
