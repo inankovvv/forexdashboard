@@ -108,8 +108,10 @@ def format_candle_time(value, timeframe=None):
             "4h": pd.Timedelta(hours=4),
             "1d": pd.Timedelta(days=1),
         }[timeframe]
-        open_ts = ts - delta
-        return f"{open_ts.strftime('%Y-%m-%d %H:%M')} → {ts.strftime('%Y-%m-%d %H:%M')}"
+        # candle_time is stored as the candle's OPEN time (yfinance index);
+        # add delta to derive the close time.
+        close_ts = ts + delta
+        return f"{ts.strftime('%Y-%m-%d %H:%M')} → {close_ts.strftime('%Y-%m-%d %H:%M')}"
 
     return ts.strftime("%Y-%m-%d %H:%M")
 
