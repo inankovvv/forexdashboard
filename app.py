@@ -360,19 +360,20 @@ with tab_dashboard:
 
     # ------------------- SIGNALS TABLE -------------------
     st.subheader("Signals")
-    st.caption("Tick 📌 on any row to load that pair and timeframe in the chart and analysis panel below.")
+    st.caption("Tick 📌 on any row to load that pair and timeframe in the chart and analysis panel below. The # column keeps the signal's original position in the current filtered list.")
     if signals_df.empty:
         st.info("No signals yet — run a scan from the sidebar to populate this table.")
     else:
         table_df = signals_df.copy()
         table_df["_row_key"] = table_df.apply(_signal_key, axis=1)
+        table_df["#"] = range(1, len(table_df) + 1)
         table_df["candle_time_raw"] = pd.to_datetime(table_df["candle_time"], errors="coerce")
         table_df["candle_time"] = table_df.apply(
             lambda row: format_candle_time(row["candle_time"], row["timeframe"]),
             axis=1,
         )
-        table_df = table_df[["_row_key", "instrument", "timeframe", "signal_type", "direction", "price", "candle_time", "candle_time_raw"]]
-        table_df.columns = ["_row_key", "Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close", "_candle_time_raw"]
+        table_df = table_df[["_row_key", "#", "instrument", "timeframe", "signal_type", "direction", "price", "candle_time", "candle_time_raw"]]
+        table_df.columns = ["_row_key", "#", "Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close", "_candle_time_raw"]
 
         # Emoji-prefix direction for visual cues (st.data_editor doesn't support pandas Styler)
         table_df["Direction"] = table_df["Direction"].map(
@@ -397,12 +398,26 @@ with tab_dashboard:
         # Keep the checked row pinned at the top so the table is visually focused on it.
         table_df = table_df.drop(columns=["_candle_time_raw"]).reset_index(drop=True)
 
+        _focused_no = None
+        _focused_row = None
+        if _sel_key is not None:
+            _focused_matches = table_df["_row_key"].apply(lambda key: key == _sel_key)
+            if _focused_matches.any():
+                _focused_row = table_df.loc[_focused_matches].iloc[0]
+                _focused_no = int(_focused_row["#"])
+
+        if _focused_no is not None:
+            _next_no = _focused_no + 1 if _focused_no < len(table_df) else None
+            next_text = f"Next row to inspect: #{_next_no}" if _next_no is not None else "Next row to inspect: —"
+            st.info(f"Focused row #{_focused_no} of {len(table_df)}. {next_text}")
+
         edited = st.data_editor(
             table_df.drop(columns=["_row_key"]),
             column_config={
+                "#": st.column_config.NumberColumn("#", width="small", format="%d"),
                 "📌": st.column_config.CheckboxColumn("📌", default=False, width="small"),
             },
-            disabled=["Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close"],
+            disabled=["#", "Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close"],
             hide_index=True,
             height=450,
             width="stretch",
@@ -442,11 +457,12 @@ with tab_dashboard:
         _match = signals_df.apply(lambda row: _signal_key(row) == _chart_key, axis=1)
         if _match.any():
             _sig_row = signals_df.loc[_match].iloc[0]
+            _focused_no = int(signals_df.index[_match][0]) + 1
             chart_symbol     = TRADINGVIEW_SYMBOLS.get(_sig_row["instrument"], TRADINGVIEW_SYMBOLS["EURUSD"])
             chart_interval   = TF_TO_TV_INTERVAL.get(_sig_row["timeframe"], "60")
             chart_instrument = _sig_row["instrument"]
             st.info(
-                f"📌 **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
+                f"📌 **#{_focused_no}** · **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
                 f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
                 f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
             )
