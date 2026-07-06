@@ -35,8 +35,8 @@ if "scan_running" not in st.session_state:
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
-if "selected_idx" not in st.session_state:
-    st.session_state["selected_idx"] = None
+if "selected_signal_key" not in st.session_state:
+    st.session_state["selected_signal_key"] = None
 
 if PASSWORD:
     if not st.session_state.get("authenticated"):
@@ -72,6 +72,15 @@ DEFAULT_SCAN_INSTRUMENTS = list(INSTRUMENTS)
 DEFAULT_SCAN_TIMEFRAMES = list(TIMEFRAMES)
 META_LAST_SCAN = "last_scan_time"
 META_CLEARED_AT = "signals_cleared_at"
+
+
+def _signal_key(row) -> tuple:
+    return (
+        row["instrument"],
+        row["timeframe"],
+        row["signal_type"],
+        str(row["candle_time"]),
+    )
 
 # Maps our instrument keys to TradingView's symbol format for the embedded
 # widget. These are best-effort — TradingView's exact ticker for indices/
@@ -355,26 +364,41 @@ with tab_dashboard:
     if signals_df.empty:
         st.info("No signals yet — run a scan from the sidebar to populate this table.")
     else:
-        display_df = signals_df.copy()
-        display_df["candle_time"] = display_df.apply(
+        table_df = signals_df.copy()
+        table_df["_row_key"] = table_df.apply(_signal_key, axis=1)
+        table_df["candle_time_raw"] = pd.to_datetime(table_df["candle_time"], errors="coerce")
+        table_df["candle_time"] = table_df.apply(
             lambda row: format_candle_time(row["candle_time"], row["timeframe"]),
             axis=1,
         )
-        display_df = display_df[["instrument", "timeframe", "signal_type", "direction", "price", "candle_time"]]
-        display_df.columns = ["Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close"]
+        table_df = table_df[["_row_key", "instrument", "timeframe", "signal_type", "direction", "price", "candle_time", "candle_time_raw"]]
+        table_df.columns = ["_row_key", "Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close", "_candle_time_raw"]
 
         # Emoji-prefix direction for visual cues (st.data_editor doesn't support pandas Styler)
-        display_df["Direction"] = display_df["Direction"].map(
+        table_df["Direction"] = table_df["Direction"].map(
             {"bullish": "🟢 bullish", "bearish": "🔴 bearish", "neutral": "⚪ neutral"}
-        ).fillna(display_df["Direction"])
-        display_df.insert(0, "📌", False)
+        ).fillna(table_df["Direction"])
+        table_df.insert(0, "📌", False)
 
-        _sel = st.session_state.get("selected_idx")
-        if _sel is not None and _sel < len(display_df):
-            display_df.iloc[_sel, 0] = True
+        _sel_key = st.session_state.get("selected_signal_key")
+        if _sel_key is not None:
+            _selected_mask = table_df["_row_key"].apply(lambda key: key == _sel_key)
+            if _selected_mask.any():
+                table_df.loc[_selected_mask, "📌"] = True
+                table_df["_selected_sort"] = _selected_mask.astype(int)
+                table_df = table_df.sort_values(
+                    by=["_selected_sort", "_candle_time_raw"],
+                    ascending=[False, False],
+                    kind="mergesort",
+                ).drop(columns=["_selected_sort"])
+            else:
+                st.session_state["selected_signal_key"] = None
+
+        # Keep the checked row pinned at the top so the table is visually focused on it.
+        table_df = table_df.drop(columns=["_candle_time_raw"]).reset_index(drop=True)
 
         edited = st.data_editor(
-            display_df,
+            table_df.drop(columns=["_row_key"]),
             column_config={
                 "📌": st.column_config.CheckboxColumn("📌", default=False, width="small"),
             },
@@ -382,22 +406,22 @@ with tab_dashboard:
             hide_index=True,
             height=450,
             use_container_width=True,
-            key=f"sig_ed_{_sel}",
+            key=f"sig_ed_{_sel_key}",
         )
 
         # Enforce single-row selection — detect the newly checked row
         _checked = edited.index[edited["📌"]].tolist()
         if len(_checked) == 0:
-            _new_sel = None
+            _new_sel_key = None
         elif len(_checked) == 1:
-            _new_sel = _checked[0]
+            _new_sel_key = table_df.iloc[_checked[0]]["_row_key"]
         else:
-            # Multiple checked — pick the row that differs from the previous selection
-            _news = [i for i in _checked if i != _sel]
-            _new_sel = _news[0] if _news else _checked[-1]
+            # Multiple checked — pick the row that differs from the previous selection.
+            _news = [i for i in _checked if table_df.iloc[i]["_row_key"] != _sel_key]
+            _new_sel_key = table_df.iloc[_news[0]]["_row_key"] if _news else table_df.iloc[_checked[-1]]["_row_key"]
 
-        if _new_sel != _sel:
-            st.session_state["selected_idx"] = _new_sel
+        if _new_sel_key != _sel_key:
+            st.session_state["selected_signal_key"] = _new_sel_key
             st.rerun()
 
         csv = signals_df.to_csv(index=False).encode("utf-8")
@@ -413,17 +437,25 @@ with tab_dashboard:
     )
 
     # Resolve chart symbol + interval from selected signal row, or sidebar.
-    _chart_sel = st.session_state.get("selected_idx")
-    if _chart_sel is not None and not signals_df.empty and _chart_sel < len(signals_df):
-        _sig_row     = signals_df.iloc[_chart_sel]
-        chart_symbol     = TRADINGVIEW_SYMBOLS.get(_sig_row["instrument"], TRADINGVIEW_SYMBOLS["EURUSD"])
-        chart_interval   = TF_TO_TV_INTERVAL.get(_sig_row["timeframe"], "60")
-        chart_instrument = _sig_row["instrument"]
-        st.info(
-            f"📌 **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
-            f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
-            f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
-        )
+    _chart_key = st.session_state.get("selected_signal_key")
+    if _chart_key is not None and not signals_df.empty:
+        _match = signals_df.apply(lambda row: _signal_key(row) == _chart_key, axis=1)
+        if _match.any():
+            _sig_row = signals_df.loc[_match].iloc[0]
+            chart_symbol     = TRADINGVIEW_SYMBOLS.get(_sig_row["instrument"], TRADINGVIEW_SYMBOLS["EURUSD"])
+            chart_interval   = TF_TO_TV_INTERVAL.get(_sig_row["timeframe"], "60")
+            chart_instrument = _sig_row["instrument"]
+            st.info(
+                f"📌 **{_sig_row['instrument']}** · **{_sig_row['timeframe']}** · "
+                f"{_sig_row['signal_type'].replace('_', ' ').title()} ({_sig_row['direction']}) · "
+                f"Candle: {format_candle_time(_sig_row['candle_time'], _sig_row['timeframe'])}"
+            )
+        else:
+            st.session_state["selected_signal_key"] = None
+            _chart_key = None
+            chart_symbol     = TRADINGVIEW_SYMBOLS["EURUSD"]
+            chart_interval   = "60"
+            chart_instrument = None
     elif len(selected_instruments) == 1 and selected_instruments[0] in TRADINGVIEW_SYMBOLS:
         chart_symbol     = TRADINGVIEW_SYMBOLS[selected_instruments[0]]
         chart_interval   = "60"
@@ -454,9 +486,13 @@ with tab_dashboard:
 
     # ------------------- PAIR ANALYSIS PANEL -------------------
     # Trigger from selected signal row, or when sidebar has exactly one instrument.
-    _panel_sel = st.session_state.get("selected_idx")
-    if _panel_sel is not None and not signals_df.empty and _panel_sel < len(signals_df):
-        inst = signals_df.iloc[_panel_sel]["instrument"]
+    _panel_key = st.session_state.get("selected_signal_key")
+    if _panel_key is not None and not signals_df.empty:
+        _match = signals_df.apply(lambda row: _signal_key(row) == _panel_key, axis=1)
+        if _match.any():
+            inst = signals_df.loc[_match].iloc[0]["instrument"]
+        else:
+            inst = None
     elif len(selected_instruments) == 1:
         inst = selected_instruments[0]
     else:
