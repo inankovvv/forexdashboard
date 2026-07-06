@@ -145,19 +145,30 @@ def run_scan(instrument_keys: list[str], timeframes: list[str], lookback_days: i
     Runs one full pass across all instruments x timeframes. Returns total new signals.
     progress_callback(tf, step, total_steps) is called after each timeframe finishes,
     if provided — used by the dashboard to show a progress bar.
+
+    A per-run cache ensures each unique timeframe is downloaded exactly once even
+    when the same timeframe appears both as a primary scan target and as a
+    higher-timeframe reference for another timeframe (e.g. 1d is fetched once for
+    its own scan slot AND reused when 4h needs its higher-TF trend).
     """
     total_new = 0
     total_steps = len(timeframes)
+    _fetch_cache: dict[str, dict] = {}  # tf -> {instrument_key -> DataFrame}
+
+    def _fetch(tf: str, days: int) -> dict:
+        if tf not in _fetch_cache:
+            _fetch_cache[tf] = get_multi_data(instrument_keys, tf, lookback_days=days)
+        return _fetch_cache[tf]
+
     for batch_idx, batch in enumerate(iter_scan_batches(timeframes, batch_size=2), start=1):
         for step_offset, tf in enumerate(batch, start=1):
             global_step = (batch_idx - 1) * 2 + step_offset
-            needs_higher = tf in HIGHER_TF
-            data = get_multi_data(instrument_keys, tf, lookback_days=max(lookback_days, 5))
+            data = _fetch(tf, max(lookback_days, 5))
             higher_data = {}
-            if needs_higher:
+            if tf in HIGHER_TF:
                 _time.sleep(1)
                 higher_tf = HIGHER_TF[tf]
-                higher_data = get_multi_data(instrument_keys, higher_tf, lookback_days=max(lookback_days, 10))
+                higher_data = _fetch(higher_tf, max(lookback_days, 10))
 
             for key in instrument_keys:
                 raw_df = data.get(key)

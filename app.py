@@ -61,7 +61,10 @@ else:
         "No app password configured. Set `app_password` in Streamlit secrets to protect access."
     )
 
-ALL_SIGNAL_TYPES = ["macd_cross", "confluence"] + PATTERN_COLUMNS
+ALL_SIGNAL_TYPES = (
+    ["confluence", "bullish_engulfing", "bearish_engulfing", "macd_cross"]
+    + [p for p in PATTERN_COLUMNS if p not in ("bullish_engulfing", "bearish_engulfing")]
+)
 DEFAULT_SCAN_INSTRUMENTS = list(INSTRUMENTS)
 DEFAULT_SCAN_TIMEFRAMES = list(TIMEFRAMES)
 META_LAST_SCAN = "last_scan_time"

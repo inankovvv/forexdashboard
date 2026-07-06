@@ -15,6 +15,7 @@ Used by scanner.py (writes signals to SQLite) and app.py (Streamlit UI).
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -189,92 +190,101 @@ def detect_ema_cross_series(df: pd.DataFrame) -> pd.Series:
 
 
 def detect_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds boolean columns for the manual candlestick patterns from the article."""
+    """
+    Adds boolean pattern columns. Fully vectorized with numpy — no Python loop.
+    Priority (highest first): engulfing > doji > hammer > shooting_star > harami > stars.
+    Each candle receives at most one label (mutual exclusivity preserved).
+    """
     df = df.copy()
+
+    o  = df["Open"].values.astype(float)
+    h  = df["High"].values.astype(float)
+    lo = df["Low"].values.astype(float)
+    c  = df["Close"].values.astype(float)
+    n  = len(df)
+
+    body       = np.abs(c - o)
+    rng        = np.maximum(h - lo, 1e-6)
+    lower_wick = np.minimum(o, c) - lo
+    upper_wick = h - np.maximum(o, c)
+
+    # Previous-candle values (shift +1) — NaN at index 0
+    p_o = np.roll(o, 1); p_o[0] = np.nan
+    p_c = np.roll(c, 1); p_c[0] = np.nan
+    p_body = np.abs(p_c - p_o)
+
+    # Two-candle-back values (shift +2) — NaN at indices 0-1
+    o1 = np.roll(o, 2); o1[:2] = np.nan
+    c1 = np.roll(c, 2); c1[:2] = np.nan
+
+    # Middle-candle values for 3-candle patterns (shift +1)
+    o2     = p_o
+    c2     = p_c
+    h_mid  = np.roll(h,  1); h_mid[0]  = np.nan
+    l_mid  = np.roll(lo, 1); l_mid[0]  = np.nan
+    mid_rng = np.maximum(h_mid - l_mid, 1e-6)
+    min_mid = np.minimum(o2, c2)
+    max_mid = np.maximum(o2, c2)
+
+    # ---- Single-candle conditions ----
+    cond_doji          = body / rng <= 0.1
+    cond_hammer        = (lower_wick >= 2 * body) & (upper_wick <= body)
+    cond_shooting_star = (upper_wick >= 2 * body) & (lower_wick <= body)
+
+    # ---- Two-candle conditions (NaN comparisons yield False → safe at index 0) ----
+    cond_bull_eng = (
+        (p_c < p_o) & (c > o) &
+        (o < p_c)   & (c > p_o) &
+        (body > p_body)
+    )
+    cond_bear_eng = (
+        (p_c > p_o) & (c < o) &
+        (o > p_c)   & (c < p_o) &
+        (body > p_body)
+    )
+    cond_bull_harami = (p_o > p_c) & (c > o) & (o > p_c) & (c < p_o)
+    cond_bear_harami = (p_o < p_c) & (c < o) & (o < p_c) & (c > p_o)
+
+    # ---- Three-candle conditions ----
+    cond_morning_star = (
+        (c1 < o1) &
+        (np.abs(c2 - o2) < mid_rng * 0.3) &
+        (c > o2) & (c > (o1 + c1) / 2) &
+        (min_mid < c1) & (max_mid > c1)
+    )
+    cond_evening_star = (
+        (c1 > o1) &
+        (np.abs(c2 - o2) < mid_rng * 0.3) &
+        (c < o2) & (c < (o1 + c1) / 2) &
+        (max_mid > c1) & (min_mid < c1)
+    )
+
+    # ---- Priority chain ----
+    # Assign lowest-priority first; higher-priority overwrites to enforce exclusivity.
+    pattern = np.full(n, "", dtype=object)
+    pattern[cond_evening_star]  = "evening_star"
+    pattern[cond_morning_star]  = "morning_star"
+    pattern[cond_bear_harami]   = "bearish_harami"
+    pattern[cond_bull_harami]   = "bullish_harami"
+    pattern[cond_shooting_star] = "shooting_star"
+    pattern[cond_hammer]        = "hammer"
+    pattern[cond_doji]          = "doji"
+    pattern[cond_bear_eng]      = "bearish_engulfing"
+    pattern[cond_bull_eng]      = "bullish_engulfing"
+
     for col in [
-        "doji", "hammer", "shooting_star", "bullish_engulfing", "bearish_engulfing",
+        "bullish_engulfing", "bearish_engulfing",
+        "doji", "hammer", "shooting_star",
         "bullish_harami", "bearish_harami", "morning_star", "evening_star",
     ]:
-        df[col] = False
-
-    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
-
-    for i in range(len(df)):
-        curr_o = o.iloc[i]
-        curr_h = h.iloc[i]
-        curr_l = l.iloc[i]
-        curr_c = c.iloc[i]
-
-        body = abs(curr_c - curr_o)
-        rng = max(curr_h - curr_l, 1e-6)
-        lower_wick = min(curr_o, curr_c) - curr_l
-        upper_wick = curr_h - max(curr_o, curr_c)
-
-        if body / rng <= 0.1:
-            df.at[df.index[i], "doji"] = True
-            continue
-
-        if lower_wick >= 2 * body and upper_wick <= body:
-            df.at[df.index[i], "hammer"] = True
-            continue
-
-        if upper_wick >= 2 * body and lower_wick <= body:
-            df.at[df.index[i], "shooting_star"] = True
-            continue
-
-        if i >= 1:
-            prev_o = o.iloc[i - 1]
-            prev_c = c.iloc[i - 1]
-            prev_body = abs(prev_c - prev_o)
-
-            if (
-                prev_c < prev_o
-                and curr_c > curr_o
-                and curr_o < prev_c
-                and curr_c > prev_o
-                and body > prev_body
-            ):
-                df.at[df.index[i], "bullish_engulfing"] = True
-                continue
-
-            if (
-                prev_c > prev_o
-                and curr_c < curr_o
-                and curr_o > prev_c
-                and curr_c < prev_o
-                and body > prev_body
-            ):
-                df.at[df.index[i], "bearish_engulfing"] = True
-                continue
-
-            if prev_o > prev_c and curr_o < curr_c and curr_o > prev_c and curr_c < prev_o:
-                df.at[df.index[i], "bullish_harami"] = True
-                continue
-
-            if prev_o < prev_c and curr_o > curr_c and curr_o < prev_c and curr_c > prev_o:
-                df.at[df.index[i], "bearish_harami"] = True
-                continue
-
-        if i >= 2:
-            o1, c1 = o.iloc[i - 2], c.iloc[i - 2]
-            o2, c2 = o.iloc[i - 1], c.iloc[i - 1]
-            prev_high = h.iloc[i - 1]
-            prev_low = l.iloc[i - 1]
-
-            if c1 < o1 and abs(c2 - o2) < (prev_high - prev_low) * 0.3 and curr_c > o2 and curr_c > (o1 + c1) / 2:
-                if min(o2, c2) < c1 and max(o2, c2) > c1:
-                    df.at[df.index[i], "morning_star"] = True
-                    continue
-
-            if c1 > o1 and abs(c2 - o2) < (prev_high - prev_low) * 0.3 and curr_c < o2 and curr_c < (o1 + c1) / 2:
-                if max(o2, c2) > c1 and min(o2, c2) < c1:
-                    df.at[df.index[i], "evening_star"] = True
+        df[col] = pattern == col
 
     return df
 
 
 PATTERN_COLUMNS = [
-    "doji", "hammer", "shooting_star", "bullish_engulfing", "bearish_engulfing",
+    "bullish_engulfing", "bearish_engulfing",
+    "doji", "hammer", "shooting_star",
     "bullish_harami", "bearish_harami", "morning_star", "evening_star",
 ]
 
