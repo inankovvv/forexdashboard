@@ -371,11 +371,15 @@ with tab_dashboard:
         "selector (top toolbar) to switch instruments/timeframes."
     )
 
-    default_symbol = TRADINGVIEW_SYMBOLS["EURUSD"]
+    # Auto-load the selected instrument when exactly one is chosen in the sidebar.
+    if len(selected_instruments) == 1 and selected_instruments[0] in TRADINGVIEW_SYMBOLS:
+        chart_symbol = TRADINGVIEW_SYMBOLS[selected_instruments[0]]
+    else:
+        chart_symbol = TRADINGVIEW_SYMBOLS["EURUSD"]
     tradingview_url = (
         "https://www.tradingview.com/widgetembed/?frameElementId=tradingview_chart"
         "&widgetType=widget"
-        f"&symbol={quote(default_symbol, safe='')}"
+        f"&symbol={quote(chart_symbol, safe='')}"
         "&interval=60"
         "&theme=dark"
         "&style=1"
