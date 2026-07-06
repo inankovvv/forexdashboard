@@ -405,7 +405,7 @@ with tab_dashboard:
             disabled=["Instrument", "Timeframe", "Signal", "Direction", "Price", "Candle Open → Close"],
             hide_index=True,
             height=450,
-            use_container_width=True,
+            width="stretch",
             key=f"sig_ed_{_sel_key}",
         )
 
